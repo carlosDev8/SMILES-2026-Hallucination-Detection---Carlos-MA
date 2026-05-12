@@ -46,7 +46,7 @@ def aggregate(
     # STUDENT: Replace or extend the aggregation below.
     # ------------------------------------------------------------------
 
-    real_mask = attention_mask.bool()
+    real_mask = attention_mask.bool().to(hidden_states.device)
     n_layers = hidden_states.shape[0]
 
     pooled_layers = []
