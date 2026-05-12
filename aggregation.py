@@ -18,6 +18,7 @@ single entry point called from the notebook.
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 
 def aggregate(
@@ -45,16 +46,41 @@ def aggregate(
     # STUDENT: Replace or extend the aggregation below.
     # ------------------------------------------------------------------
 
-    # Default: last real token of the final transformer layer.
-    layer = hidden_states[-1]          # (seq_len, hidden_dim)
+    real_mask = attention_mask.bool()
+    n_layers = hidden_states.shape[0]
 
-    # Find the index of the last real (non-padding) token.
-    real_positions = attention_mask.nonzero(as_tuple=False)  # (n_real, 1)
-    last_pos = int(real_positions[-1].item())                 # scalar index
+    pooled_layers = []
+    for layer_idx in [-4, -3, -2, -1]:
+        layer_hs = hidden_states[layer_idx]
+        real_tokens = layer_hs[real_mask]
+        pooled_layers.append(real_tokens.mean(dim=0))
 
-    feature = layer[last_pos]          # (hidden_dim,)
+    last_layer = hidden_states[-1]
+    real_positions = real_mask.nonzero(as_tuple=False)
+    last_pos = int(real_positions[-1].item())
+    pooled_layers.append(last_layer[last_pos])
 
-    return feature
+    pooled_feature = torch.cat(pooled_layers, dim=0)
+
+    mean_reps = []
+    for i in range(n_layers):
+        real_tokens = hidden_states[i][real_mask]
+        mean_reps.append(real_tokens.mean(dim=0))
+
+    layer_norms = torch.stack([r.norm() for r in mean_reps])
+
+    cosine_sims = torch.stack([
+        F.cosine_similarity(mean_reps[i].unsqueeze(0),
+                            mean_reps[i + 1].unsqueeze(0)).squeeze()
+        for i in range(n_layers - 1)
+    ])
+
+    seq_len_feat = (real_mask.float().sum() / 512.0).unsqueeze(0)
+
+    geo_part = torch.cat([layer_norms, cosine_sims, seq_len_feat], dim=0)
+
+    feature = torch.cat([pooled_feature, geo_part], dim=0)
+    return feature.float()
     # ------------------------------------------------------------------
 
 

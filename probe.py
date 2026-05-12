@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.decomposition import PCA
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import StandardScaler
 
@@ -25,11 +26,33 @@ class HallucinationProbe(nn.Module):
     built lazily in ``fit()`` once the feature dimension is known.
     """
 
+    _MAX_INPUT_DIM: int = 256
+
     def __init__(self) -> None:
         super().__init__()
         self._net: nn.Sequential | None = None  # built lazily in fit()
         self._scaler = StandardScaler()
+        self._pca: PCA | None = None
         self._threshold: float = 0.5  # tuned by fit_hyperparameters()
+
+    def _preprocess_fit(self, X: np.ndarray) -> np.ndarray:
+        X_scaled = self._scaler.fit_transform(X)
+        if X_scaled.shape[1] > self._MAX_INPUT_DIM:
+            n_components = min(self._MAX_INPUT_DIM, X_scaled.shape[0] - 1)
+            self._pca = PCA(n_components=n_components, random_state=42)
+            X_out = self._pca.fit_transform(X_scaled)
+        else:
+            self._pca = None
+            X_out = X_scaled
+        return X_out.astype(np.float32)
+
+    def _preprocess_transform(self, X: np.ndarray) -> np.ndarray:
+        X_scaled = self._scaler.transform(X)
+        if self._pca is not None:
+            X_out = self._pca.transform(X_scaled)
+        else:
+            X_out = X_scaled
+        return X_out.astype(np.float32)
 
     # ------------------------------------------------------------------
     # STUDENT: Replace or extend the network definition below.
@@ -43,9 +66,15 @@ class HallucinationProbe(nn.Module):
             input_dim: Feature vector dimensionality.
         """
         self._net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.Dropout(p=0.35),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(64, 1),
         )
 
     # ------------------------------------------------------------------
@@ -79,11 +108,11 @@ class HallucinationProbe(nn.Module):
         Returns:
             ``self`` (for method chaining).
         """
-        X_scaled = self._scaler.fit_transform(X)
+        X_proc = self._preprocess_fit(X)
 
-        self._build_network(X_scaled.shape[1])
+        self._build_network(X_proc.shape[1])
 
-        X_t = torch.from_numpy(X_scaled).float()
+        X_t = torch.from_numpy(X_proc).float()
         y_t = torch.from_numpy(y.astype(np.float32))
 
         # Weight positive examples by neg/pos ratio to handle class imbalance.
@@ -95,15 +124,20 @@ class HallucinationProbe(nn.Module):
         # ------------------------------------------------------------------
         # STUDENT: Replace or extend the training loop below.
         # ------------------------------------------------------------------
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        n_epochs = 500
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=n_epochs, eta_min=1e-5
+        )
 
         self.train()
-        for _ in range(200):
+        for _ in range(n_epochs):
             optimizer.zero_grad()
             logits = self(X_t)
             loss = criterion(logits, y_t)
             loss.backward()
             optimizer.step()
+            scheduler.step()
         # ------------------------------------------------------------------
 
         self.eval()
@@ -169,10 +203,9 @@ class HallucinationProbe(nn.Module):
             estimated probability of the hallucinated class (label 1).
             Used to compute AUROC.
         """
-        X_scaled = self._scaler.transform(X)
-        X_t = torch.from_numpy(X_scaled).float()
+        X_proc = self._preprocess_transform(X)
+        X_t = torch.from_numpy(X_proc).float()
         with torch.no_grad():
             logits = self(X_t)
             prob_pos = torch.sigmoid(logits).numpy()
         return np.stack([1.0 - prob_pos, prob_pos], axis=1)
-
