@@ -26,7 +26,7 @@ class HallucinationProbe(nn.Module):
     built lazily in ``fit()`` once the feature dimension is known.
     """
 
-    _MAX_INPUT_DIM: int = 256
+    _MAX_INPUT_DIM: int = 64
 
     def __init__(self) -> None:
         super().__init__()
@@ -66,15 +66,7 @@ class HallucinationProbe(nn.Module):
             input_dim: Feature vector dimensionality.
         """
         self._net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(p=0.35),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(64, 1),
+            nn.Linear(input_dim, 1),
         )
 
     # ------------------------------------------------------------------
@@ -124,11 +116,8 @@ class HallucinationProbe(nn.Module):
         # ------------------------------------------------------------------
         # STUDENT: Replace or extend the training loop below.
         # ------------------------------------------------------------------
-        n_epochs = 500
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=n_epochs, eta_min=1e-5
-        )
+        n_epochs = 1000
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-2, weight_decay=0.1)
 
         self.train()
         for _ in range(n_epochs):
@@ -137,7 +126,6 @@ class HallucinationProbe(nn.Module):
             loss = criterion(logits, y_t)
             loss.backward()
             optimizer.step()
-            scheduler.step()
         # ------------------------------------------------------------------
 
         self.eval()
